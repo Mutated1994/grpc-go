@@ -48,19 +48,23 @@ type ccResolverWrapper struct {
 // newCCResolverWrapper uses the resolver.Builder to build a Resolver and
 // returns a ccResolverWrapper object which wraps the newly built resolver.
 func newCCResolverWrapper(cc *ClientConn, rb resolver.Builder) (*ccResolverWrapper, error) {
+	// 好一个套娃
 	ccr := &ccResolverWrapper{
-		cc:   cc,
-		done: grpcsync.NewEvent(),
+		cc:   cc, // ClientConn
+		done: grpcsync.NewEvent(), // cc 里面也有这个
 	}
 
+	// 跳过
 	var credsClone credentials.TransportCredentials
 	if creds := cc.dopts.copts.TransportCredentials; creds != nil {
 		credsClone = creds.Clone()
 	}
+
+	// 这里也没有干啥
 	rbo := resolver.BuildOptions{
-		DisableServiceConfig: cc.dopts.disableServiceConfig,
-		DialCreds:            credsClone,
-		CredsBundle:          cc.dopts.copts.CredsBundle,
+		DisableServiceConfig: cc.dopts.disableServiceConfig, // false
+		DialCreds:            credsClone, // nil
+		CredsBundle:          cc.dopts.copts.CredsBundle, // nil
 		Dialer:               cc.dopts.copts.Dialer,
 	}
 
@@ -71,6 +75,7 @@ func newCCResolverWrapper(cc *ClientConn, rb resolver.Builder) (*ccResolverWrapp
 	// accessing ccr.resolver which is being assigned here.
 	ccr.resolverMu.Lock()
 	defer ccr.resolverMu.Unlock()
+	// rb.Build (*passthroughBuilder) Build
 	ccr.resolver, err = rb.Build(cc.parsedTarget, ccr, rbo)
 	if err != nil {
 		return nil, err
@@ -95,6 +100,7 @@ func (ccr *ccResolverWrapper) close() {
 
 // poll begins or ends asynchronous polling of the resolver based on whether
 // err is ErrBadResolverState.
+// 这个函数可以忽略，暂时用不到
 func (ccr *ccResolverWrapper) poll(err error) {
 	ccr.pollingMu.Lock()
 	defer ccr.pollingMu.Unlock()
@@ -104,7 +110,7 @@ func (ccr *ccResolverWrapper) poll(err error) {
 			close(ccr.polling)
 			ccr.polling = nil
 		}
-		return
+		return // 直接就退出了
 	}
 	if ccr.polling != nil {
 		// already polling
@@ -137,6 +143,8 @@ func (ccr *ccResolverWrapper) poll(err error) {
 }
 
 func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
+	// UpdateState 理论上可以可以被多次调用
+	// 但是调用 ClientConn.Close() 之后，将无法调用 UpdateState
 	if ccr.done.HasFired() {
 		return
 	}
@@ -144,7 +152,13 @@ func (ccr *ccResolverWrapper) UpdateState(s resolver.State) {
 	if channelz.IsOn() {
 		ccr.addChannelzTraceEvent(s)
 	}
+	// resolver.State{
+	//		Addresses: []resolver.Address{
+	//			{Addr: r.target.Endpoint}, // localhost:50051 or "10.1.1.2:33,10.1.1.2:32"
+	//		},
+	//	}
 	ccr.curState = s
+	// 重点看 ccr.cc.updateResolverState，ccr.poll请忽略
 	ccr.poll(ccr.cc.updateResolverState(ccr.curState, nil))
 }
 

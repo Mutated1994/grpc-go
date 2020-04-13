@@ -78,14 +78,23 @@ func (b *pickfirstBalancer) ResolverError(err error) {
 		grpclog.Infof("pickfirstBalancer: ResolverError called with error %v", err)
 	}
 }
-
+// cs.ResolverState.Addresses [0] = 👇
+//type Address struct {
+//	Addr string  localhost:50051
+//	ServerName string
+//	Attributes *attributes.Attributes
+//	Type AddressType
+//	Metadata interface{}
+//}
 func (b *pickfirstBalancer) UpdateClientConnState(cs balancer.ClientConnState) error {
-	if len(cs.ResolverState.Addresses) == 0 {
+	if len(cs.ResolverState.Addresses) == 0 { // 地址要有才行
 		b.ResolverError(errors.New("produced zero addresses"))
 		return balancer.ErrBadResolverState
 	}
-	if b.sc == nil {
+	if b.sc == nil { // 第一遍走这里
 		var err error
+		// b.cc balancer.ClientConn
+		// b.sc 要好好留意，这个涉及pick
 		b.sc, err = b.cc.NewSubConn(cs.ResolverState.Addresses, balancer.NewSubConnOptions{})
 		if err != nil {
 			if grpclog.V(2) {
@@ -117,9 +126,10 @@ func (b *pickfirstBalancer) UpdateSubConnState(sc balancer.SubConn, s balancer.S
 		}
 		return
 	}
+	// 直接到这里
 	b.state = s.ConnectivityState
 	if s.ConnectivityState == connectivity.Shutdown {
-		b.sc = nil
+		b.sc = nil // addrConn.tearDown 对应 b.sc
 		return
 	}
 

@@ -263,23 +263,26 @@ type jsonSC struct {
 func init() {
 	internal.ParseServiceConfigForTesting = parseServiceConfig
 }
+// js 默认 {}
 func parseServiceConfig(js string) *serviceconfig.ParseResult {
 	if len(js) == 0 {
 		return &serviceconfig.ParseResult{Err: fmt.Errorf("no JSON service config provided")}
 	}
 	var rsc jsonSC
-	err := json.Unmarshal([]byte(js), &rsc)
+	err := json.Unmarshal([]byte(js), &rsc) // 就是一个空 rsc struct
 	if err != nil {
 		grpclog.Warningf("grpc: parseServiceConfig error unmarshaling %s due to %v", js, err)
 		return &serviceconfig.ParseResult{Err: err}
 	}
 	sc := ServiceConfig{
-		LB:                rsc.LoadBalancingPolicy,
+		LB:                rsc.LoadBalancingPolicy, // nil
 		Methods:           make(map[string]MethodConfig),
-		retryThrottling:   rsc.RetryThrottling,
-		healthCheckConfig: rsc.HealthCheckConfig,
-		rawJSONString:     js,
+		retryThrottling:   rsc.RetryThrottling, // nil
+		healthCheckConfig: rsc.HealthCheckConfig, // nil
+		rawJSONString:     js, // {}
 	}
+
+	// 跳过
 	if rsc.LoadBalancingConfig != nil {
 		for i, lbcfg := range *rsc.LoadBalancingConfig {
 			if len(lbcfg) != 1 {
@@ -317,6 +320,7 @@ func parseServiceConfig(js string) *serviceconfig.ParseResult {
 		}
 	}
 
+	// 到这边返回了
 	if rsc.MethodConfig == nil {
 		return &serviceconfig.ParseResult{Config: &sc}
 	}

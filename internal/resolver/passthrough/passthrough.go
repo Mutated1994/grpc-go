@@ -27,10 +27,20 @@ const scheme = "passthrough"
 type passthroughBuilder struct{}
 
 func (*passthroughBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
+	// type Target struct {
+	//	Scheme    string  passthrough
+	//	Authority string  ""
+	//	Endpoint  string localhost:50051
+	//}
 	r := &passthroughResolver{
 		target: target,
-		cc:     cc,
+		cc:     cc, // 这个不是clientConn,而是resolver.ClientConn（就是那个ccr）
 	}
+	// cc.curState = s
+	// cc.cc.firstResolveEvent.Fire()
+	// cc.cc.sc = emptyServiceConfig
+	// cc.cc.curBalancerName =  first_pick
+	// cc.cc.balancerWrapper = ccBalancerWrapper
 	r.start()
 	return r, nil
 }
@@ -45,7 +55,16 @@ type passthroughResolver struct {
 }
 
 func (r *passthroughResolver) start() {
-	r.cc.UpdateState(resolver.State{Addresses: []resolver.Address{{Addr: r.target.Endpoint}}})
+	// cc 是 resolver.ClientConn 不是 clientConn
+	// r.target.Endpoint 可以是 localhost:50051 也可以 "10.1.1.2:33,10.1.1.2:32"
+	// resolver.Address 也可以是多个
+	r.cc.UpdateState(resolver.State{
+		Addresses: []resolver.Address{
+			{Addr: r.target.Endpoint},
+		},
+	})
+	// 继续切换频道回到 ccResolverWrapper.UpdateState
+	// ccResolverWrapper 实现了 resolver.ClientConn 接口
 }
 
 func (*passthroughResolver) ResolveNow(o resolver.ResolveNowOptions) {}

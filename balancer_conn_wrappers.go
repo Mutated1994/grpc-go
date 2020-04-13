@@ -50,15 +50,28 @@ type ccBalancerWrapper struct {
 	subConns map[*acBalancerWrapper]struct{}
 }
 
+// builder: newPickfirstBuilder() first_pick
+// 	cc.balancerBuildOpts = balancer.BuildOptions{
+//		DialCreds:        credsClone, // nil
+//		CredsBundle:      cc.dopts.copts.CredsBundle, // nil
+//		Dialer:           cc.dopts.copts.Dialer, // 看上面备注 (&net.Dialer{}).DialContext
+//		ChannelzParentID: cc.channelzID, // 忽略 0
+//		Target:           cc.parsedTarget,
+//	}
+//	// type Target struct {
+//	//	Scheme    string  passthrough
+//	//	Authority string  ""
+//	//	Endpoint  string localhost:50051
+//	//}
 func newCCBalancerWrapper(cc *ClientConn, b balancer.Builder, bopts balancer.BuildOptions) *ccBalancerWrapper {
 	ccb := &ccBalancerWrapper{
 		cc:       cc,
-		scBuffer: buffer.NewUnbounded(),
-		done:     grpcsync.NewEvent(),
+		scBuffer: buffer.NewUnbounded(), // &Unbounded{c: make(chan interface{}, 1)}
+		done:     grpcsync.NewEvent(), // 又来
 		subConns: make(map[*acBalancerWrapper]struct{}),
 	}
-	go ccb.watcher()
-	ccb.balancer = b.Build(ccb, bopts)
+	go ccb.watcher() // 这里还没有实际的开始连接，做了一些balance层面的工作 TODO 后续再看
+	ccb.balancer = b.Build(ccb, bopts) // &pickfirstBalancer{cc: cc} 里面放了 balancer.ClientConn 的实现 ccBalancerWrapper
 	return ccb
 }
 
@@ -73,23 +86,27 @@ func (ccb *ccBalancerWrapper) watcher() {
 				break
 			}
 			ccb.balancerMu.Lock()
-			su := t.(*scStateUpdate)
-			if ub, ok := ccb.balancer.(balancer.V2Balancer); ok {
+			su := t.(*scStateUpdate) // su.sc = acBalancerWrapper
+			if ub, ok := ccb.balancer.(balancer.V2Balancer); ok { // 走这里
 				ub.UpdateSubConnState(su.sc, balancer.SubConnState{ConnectivityState: su.state, ConnectionError: su.err})
 			} else {
 				ccb.balancer.HandleSubConnStateChange(su.sc, su.state)
+				// HandleSubConnStateChange 里面也是调用 b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: s})
 			}
 			ccb.balancerMu.Unlock()
 		case <-ccb.done.Done():
 		}
 
-		if ccb.done.HasFired() {
+		if ccb.done.HasFired() { // func (cc *ClientConn) Close() 时关闭
+			// func (b *pickfirstBalancer) Close() {} 这个是空的
 			ccb.balancer.Close()
 			ccb.mu.Lock()
-			scs := ccb.subConns
+			scs := ccb.subConns //  map[*acBalancerWrapper]struct{}
 			ccb.subConns = nil
 			ccb.mu.Unlock()
 			for acbw := range scs {
+				// delete(cc.conns, ac) 从 cc.conns map中移除
+				//	ac.tearDown(err) err = errConnDrain
 				ccb.cc.removeAddrConn(acbw.getAddrConn(), errConnDrain)
 			}
 			ccb.UpdateState(balancer.State{ConnectivityState: connectivity.Connecting, Picker: nil})
@@ -123,9 +140,11 @@ func (ccb *ccBalancerWrapper) handleSubConnStateChange(sc balancer.SubConn, s co
 func (ccb *ccBalancerWrapper) updateClientConnState(ccs *balancer.ClientConnState) error {
 	ccb.balancerMu.Lock()
 	defer ccb.balancerMu.Unlock()
-	if ub, ok := ccb.balancer.(balancer.V2Balancer); ok {
+	if ub, ok := ccb.balancer.(balancer.V2Balancer); ok { // pickfirstBalancer
 		return ub.UpdateClientConnState(*ccs)
 	}
+	// 这里也是一样的，也是调用 UpdateClientConnState()
+	// b.UpdateClientConnState(balancer.ClientConnState{ResolverState: resolver.State{Addresses: addrs}}) // Ignore error
 	ccb.balancer.HandleResolvedAddrs(ccs.ResolverState.Addresses, nil)
 	return nil
 }
@@ -138,13 +157,22 @@ func (ccb *ccBalancerWrapper) resolverError(err error) {
 	}
 }
 
+// cs.ResolverState.Addresses [0] = 👇
+//type Address struct {
+//	Addr string  localhost:50051
+//	ServerName string
+//	Attributes *attributes.Attributes
+//	Type AddressType
+//	Metadata interface{}
+//}
+// opts = balancer.NewSubConnOptions{}
 func (ccb *ccBalancerWrapper) NewSubConn(addrs []resolver.Address, opts balancer.NewSubConnOptions) (balancer.SubConn, error) {
-	if len(addrs) <= 0 {
+	if len(addrs) <= 0 { // 必须要给地址
 		return nil, fmt.Errorf("grpc: cannot create SubConn with empty address list")
 	}
 	ccb.mu.Lock()
 	defer ccb.mu.Unlock()
-	if ccb.subConns == nil {
+	if ccb.subConns == nil { // close 时变成 nil
 		return nil, fmt.Errorf("grpc: ClientConn balancer wrapper was closed")
 	}
 	ac, err := ccb.cc.newAddrConn(addrs, opts)

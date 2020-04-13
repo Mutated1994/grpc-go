@@ -48,12 +48,12 @@ import (
 // clientConnectionCounter counts the number of connections a client has
 // initiated (equal to the number of http2Clients created). Must be accessed
 // atomically.
-var clientConnectionCounter uint64
+var clientConnectionCounter uint64 // http2Clients 计数器
 
 // http2Client implements the ClientTransport interface with HTTP2.
 type http2Client struct {
-	lastRead   int64 // Keep this field 64-bit aligned. Accessed atomically.
-	ctx        context.Context
+	lastRead   int64 // Keep this field 64-bit aligned. Accessed atomically.  // 最后一次读的时间，给 keepalive 用的
+	ctx        context.Context // // 基于 cc.ctx
 	cancel     context.CancelFunc
 	ctxDone    <-chan struct{} // Cache the ctx.Done() chan.
 	userAgent  string
@@ -98,10 +98,10 @@ type http2Client struct {
 	// connection was established.
 	onPrefaceReceipt func()
 
-	maxConcurrentStreams  uint32
-	streamQuota           int64
-	streamsQuotaAvailable chan struct{}
-	waitingStreams        uint32
+	maxConcurrentStreams  uint32 // 可并发的流数量
+	streamQuota           int64 // 当前可用
+	streamsQuotaAvailable chan struct{} // 当前是否可用的通知管道
+	waitingStreams        uint32 // 当前等待的流数量
 	nextID                uint32
 
 	mu            sync.Mutex // guard the following variables
@@ -163,16 +163,16 @@ func isTemporary(err error) bool {
 // fails.
 func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts ConnectOptions, onPrefaceReceipt func(), onGoAway func(GoAwayReason), onClose func()) (_ *http2Client, err error) {
 	scheme := "http"
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx) // 这个ctx是有 cc.ctx  context.Backgroud()
 	defer func() {
 		if err != nil {
 			cancel()
 		}
 	}()
 
-	conn, err := dial(connectCtx, opts.Dialer, addr.Addr)
+	conn, err := dial(connectCtx, opts.Dialer, addr.Addr) // conn 这个就是通过 (&net.Dialer{}).DialContext
 	if err != nil {
-		if opts.FailOnNonTempDialError {
+		if opts.FailOnNonTempDialError { // block 情况下会导致退出，对其他地方没有影响
 			return nil, connectionErrorf(isTemporary(err), err, "transport: error while dialing: %v", err)
 		}
 		return nil, connectionErrorf(true, err, "transport: Error while dialing %v", err)
@@ -186,13 +186,14 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 	kp := opts.KeepaliveParams
 	// Validate keepalive parameters.
 	if kp.Time == 0 {
-		kp.Time = defaultClientKeepaliveTime
+		kp.Time = defaultClientKeepaliveTime // 等于不kp, 时间太长
 	}
 	if kp.Timeout == 0 {
-		kp.Timeout = defaultClientKeepaliveTimeout
+		kp.Timeout = defaultClientKeepaliveTimeout // 20 秒
 	}
-	keepaliveEnabled := false
+	keepaliveEnabled := false // 应该是kp开关控制
 	if kp.Time != infinity {
+		// SetTCPUserTimeout 竟然就是一个空函数 吐血晕倒
 		if err = syscall.SetTCPUserTimeout(conn, kp.Timeout); err != nil {
 			return nil, connectionErrorf(false, err, "transport: failed to set TCP_USER_TIMEOUT: %v", err)
 		}
@@ -202,10 +203,10 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 		isSecure bool
 		authInfo credentials.AuthInfo
 	)
-	transportCreds := opts.TransportCredentials
-	perRPCCreds := opts.PerRPCCredentials
+	transportCreds := opts.TransportCredentials // nil
+	perRPCCreds := opts.PerRPCCredentials // nil
 
-	if b := opts.CredsBundle; b != nil {
+	if b := opts.CredsBundle; b != nil { // 跳过
 		if t := b.TransportCredentials(); t != nil {
 			transportCreds = t
 		}
@@ -213,7 +214,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 			perRPCCreds = append(perRPCCreds, t)
 		}
 	}
-	if transportCreds != nil {
+	if transportCreds != nil { // 跳过
 		scheme = "https"
 		conn, authInfo, err = transportCreds.ClientHandshake(connectCtx, addr.Authority, conn)
 		if err != nil {
@@ -221,63 +222,103 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 		}
 		isSecure = true
 	}
-	dynamicWindow := true
+	dynamicWindow := true // 这个还要再看下
 	icwz := int32(initialWindowSize)
 	if opts.InitialConnWindowSize >= defaultWindowSize {
 		icwz = opts.InitialConnWindowSize
 		dynamicWindow = false
 	}
-	writeBufSize := opts.WriteBufferSize
+	writeBufSize := opts.WriteBufferSize // 有没有可能写满呢？TODO 这三个点后续还要深挖
 	readBufSize := opts.ReadBufferSize
-	maxHeaderListSize := defaultClientMaxHeaderListSize
+	maxHeaderListSize := defaultClientMaxHeaderListSize // 请求头大小
 	if opts.MaxHeaderListSize != nil {
 		maxHeaderListSize = *opts.MaxHeaderListSize
 	}
 	t := &http2Client{
-		ctx:                   ctx,
+		ctx:                   ctx,  // 基于 cc.ctx
 		ctxDone:               ctx.Done(), // Cache Done chan.
-		cancel:                cancel,
-		userAgent:             opts.UserAgent,
-		md:                    addr.Metadata,
-		conn:                  conn,
-		remoteAddr:            conn.RemoteAddr(),
-		localAddr:             conn.LocalAddr(),
-		authInfo:              authInfo,
+		cancel:                cancel, // 基于 cc.ctx 的 cancel
+		userAgent:             opts.UserAgent, // grpc-go/1.29.0-dev
+		md:                    addr.Metadata, // nil
+		conn:                  conn, // *net.TCPConn
+		remoteAddr:            conn.RemoteAddr(), // *net.TCPAddr
+		localAddr:             conn.LocalAddr(), // *net.TCPAddr
+		authInfo:              authInfo, // nil
 		readerDone:            make(chan struct{}),
 		writerDone:            make(chan struct{}),
 		goAway:                make(chan struct{}),
 		framer:                newFramer(conn, writeBufSize, readBufSize, maxHeaderListSize),
-		fc:                    &trInFlow{limit: uint32(icwz)},
-		scheme:                scheme,
+		fc:                    &trInFlow{limit: uint32(icwz)}, // int32(initialWindowSize)
+		scheme:                scheme, // http
 		activeStreams:         make(map[uint32]*Stream),
-		isSecure:              isSecure,
-		perRPCCreds:           perRPCCreds,
-		kp:                    kp,
-		statsHandler:          opts.StatsHandler,
+		isSecure:              isSecure, // false
+		perRPCCreds:           perRPCCreds, // nil
+		kp:                    kp, // 看上面
+		statsHandler:          opts.StatsHandler, // nil
 		initialWindowSize:     initialWindowSize,
 		onPrefaceReceipt:      onPrefaceReceipt,
+		// 	onPrefaceReceipt := func() {
+		//		close(prefaceReceived) prefaceReceived 是 createTransport 局部无缓冲管道
+		//	}
 		nextID:                1,
-		maxConcurrentStreams:  defaultMaxStreamsClient,
-		streamQuota:           defaultMaxStreamsClient,
+		maxConcurrentStreams:  defaultMaxStreamsClient, // 100
+		streamQuota:           defaultMaxStreamsClient, // 配额 100
 		streamsQuotaAvailable: make(chan struct{}, 1),
 		czData:                new(channelzData),
 		onGoAway:              onGoAway,
+		// 	onGoAway := func(r transport.GoAwayReason) { // 后面给http2client了
+		//		ac.mu.Lock()
+		//		ac.adjustParams(r)
+		//		once.Do(func() {
+		//			if ac.state == connectivity.Ready {
+		//				// Prevent this SubConn from being used for new RPCs by setting its
+		//				// state to Connecting.
+		//				//
+		//				// TODO: this should be Idle when grpc-go properly supports it.
+		//				ac.updateConnectivityState(connectivity.Connecting, nil)
+		//			}
+		//		})
+		//		ac.mu.Unlock()
+		//		reconnect.Fire()
+		//	}
 		onClose:               onClose,
-		keepaliveEnabled:      keepaliveEnabled,
+		// 	onClose := func() {
+		//		ac.mu.Lock()
+		//		once.Do(func() {
+		//			if ac.state == connectivity.Ready {
+		//				// Prevent this SubConn from being used for new RPCs by setting its
+		//				// state to Connecting.
+		//				//
+		//				// TODO: this should be Idle when grpc-go properly supports it.
+		//				ac.updateConnectivityState(connectivity.Connecting, nil)
+		//			}
+		//		})
+		//		ac.mu.Unlock()
+		//		close(onCloseCalled)
+		//		reconnect.Fire()
+		//	}
+		keepaliveEnabled:      keepaliveEnabled, // kp开关 默认false
 		bufferPool:            newBufferPool(),
+		//  &bufferPool{
+		//		pool: sync.Pool{
+		//			New: func() interface{} {
+		//				return new(bytes.Buffer)
+		//			},
+		//		},
+		//	}
 	}
 	t.controlBuf = newControlBuffer(t.ctxDone)
-	if opts.InitialWindowSize >= defaultWindowSize {
+	if opts.InitialWindowSize >= defaultWindowSize { // 跳过 后续再看
 		t.initialWindowSize = opts.InitialWindowSize
 		dynamicWindow = false
 	}
-	if dynamicWindow {
+	if dynamicWindow { // 这个再看下 干嘛用的，应该是个滑动窗口的
 		t.bdpEst = &bdpEstimator{
 			bdp:               initialWindowSize,
 			updateFlowControl: t.updateFlowControl,
 		}
 	}
-	if t.statsHandler != nil {
+	if t.statsHandler != nil { // 跳过
 		t.ctx = t.statsHandler.TagConn(t.ctx, &stats.ConnTagInfo{
 			RemoteAddr: t.remoteAddr,
 			LocalAddr:  t.localAddr,
@@ -287,12 +328,12 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 		}
 		t.statsHandler.HandleConn(t.ctx, connBegin)
 	}
-	if channelz.IsOn() {
+	if channelz.IsOn() { // 跳过
 		t.channelzID = channelz.RegisterNormalSocket(t, opts.ChannelzParentID, fmt.Sprintf("%s -> %s", t.localAddr, t.remoteAddr))
 	}
 	if t.keepaliveEnabled {
 		t.kpDormancyCond = sync.NewCond(&t.mu)
-		go t.keepalive()
+		go t.keepalive() // t.ctx.Done 或者状态变成 closeing 都会停止
 	}
 	// Start the reader goroutine for incoming message. Each transport has
 	// a dedicated goroutine which reads HTTP2 frame from network. Then it
@@ -323,6 +364,7 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 			Val: *opts.MaxHeaderListSize,
 		})
 	}
+	// 默认这里发了空的settings帧
 	err = t.framer.fr.WriteSettings(ss...)
 	if err != nil {
 		t.Close()
@@ -336,23 +378,24 @@ func newHTTP2Client(connectCtx, ctx context.Context, addr TargetInfo, opts Conne
 		}
 	}
 
-	t.connectionID = atomic.AddUint64(&clientConnectionCounter, 1)
+	t.connectionID = atomic.AddUint64(&clientConnectionCounter, 1) // 这个id不知道除了日志外，有没有其他意义
 
 	if err := t.framer.writer.Flush(); err != nil {
 		return nil, err
 	}
+	// 又来一个协程，看看是何方妖孽，应该流里面所有发送的帧都走这里的。
 	go func() {
 		t.loopy = newLoopyWriter(clientSide, t.framer, t.controlBuf, t.bdpEst)
-		err := t.loopy.run()
+		err := t.loopy.run() // cc.ctx 的 cancel 或者 deadline到了，这个会退出。
 		if err != nil {
 			errorf("transport: loopyWriter.run returning. Err: %v", err)
 		}
 		// If it's a connection error, let reader goroutine handle it
 		// since there might be data in the buffers.
 		if _, ok := err.(net.Error); !ok {
-			t.conn.Close()
+			t.conn.Close() // 这个是要 tcp 挥手了
 		}
-		close(t.writerDone)
+		close(t.writerDone) // 没地方用它的，只有测试用
 	}()
 	return t, nil
 }
@@ -943,7 +986,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			increment: w,
 		})
 	}
-	if sendBDPPing {
+	if sendBDPPing { // 第一次收到数据包 会发送 window_update 跟 ping 这两个帧
 		// Avoid excessive ping detection (e.g. in an L7 proxy)
 		// by sending a window update prior to the BDP ping.
 
@@ -957,7 +1000,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 		t.controlBuf.put(bdpPing)
 	}
 	// Select the right stream to dispatch.
-	s := t.getStream(f)
+	s := t.getStream(f) // 拉出小弟来
 	if s == nil {
 		return
 	}
@@ -966,7 +1009,7 @@ func (t *http2Client) handleData(f *http2.DataFrame) {
 			t.closeStream(s, io.EOF, true, http2.ErrCodeFlowControl, status.New(codes.Internal, err.Error()), nil, false)
 			return
 		}
-		if f.Header().Flags.Has(http2.FlagDataPadded) {
+		if f.Header().Flags.Has(http2.FlagDataPadded) { // 这个应该没有
 			if w := s.fc.onRead(size - uint32(len(f.Data()))); w > 0 {
 				t.controlBuf.put(&outgoingWindowUpdate{s.id, w})
 			}
@@ -1012,8 +1055,9 @@ func (t *http2Client) handleRSTStream(f *http2.RSTStreamFrame) {
 	t.closeStream(s, io.EOF, false, http2.ErrCodeNo, status.Newf(statusCode, "stream terminated by RST_STREAM with error code: %v", f.ErrCode), nil, false)
 }
 
+// 这边基本就是处理 maxStreams、maxSendHeaderListSize、streamQuota 的关系
 func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
-	if f.IsAck() {
+	if f.IsAck() { // ack 是不需要回复的
 		return
 	}
 	var maxStreams *uint32
@@ -1034,7 +1078,7 @@ func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
 		}
 		return nil
 	})
-	if isFirst && maxStreams == nil {
+	if isFirst && maxStreams == nil {  // 第一帧设置 初始默认值
 		maxStreams = new(uint32)
 		*maxStreams = math.MaxUint32
 	}
@@ -1043,11 +1087,12 @@ func (t *http2Client) handleSettings(f *http2.SettingsFrame, isFirst bool) {
 	}
 	if maxStreams != nil {
 		updateStreamQuota := func() {
+			// new  http2Client 时 maxConcurrentStreams 跟 streamQuota 都没有意义，这里都变成默认值或者第一帧里的值
 			delta := int64(*maxStreams) - int64(t.maxConcurrentStreams)
-			t.maxConcurrentStreams = *maxStreams
-			t.streamQuota += delta
-			if delta > 0 && t.waitingStreams > 0 {
-				close(t.streamsQuotaAvailable) // wake all of them up.
+			t.maxConcurrentStreams = *maxStreams // 4294967295
+			t.streamQuota += delta // 4294967295
+			if delta > 0 && t.waitingStreams > 0 { // waitingStreams == 0
+				close(t.streamsQuotaAvailable) // wake all of them up. 这里那里有用，要好好看看
 				t.streamsQuotaAvailable = make(chan struct{}, 1)
 			}
 		}
@@ -1167,15 +1212,15 @@ func (t *http2Client) handleWindowUpdate(f *http2.WindowUpdateFrame) {
 
 // operateHeaders takes action on the decoded headers.
 func (t *http2Client) operateHeaders(frame *http2.MetaHeadersFrame) {
-	s := t.getStream(frame)
+	s := t.getStream(frame) // 从 activeStreams 中取出对应的流出来
 	if s == nil {
 		return
 	}
-	endStream := frame.StreamEnded()
-	atomic.StoreUint32(&s.bytesReceived, 1)
-	initialHeader := atomic.LoadUint32(&s.headerChanClosed) == 0
+	endStream := frame.StreamEnded() // 是不是结束了 FlagHeadersEndStream  End Stream: true
+	atomic.StoreUint32(&s.bytesReceived, 1) // 就是标识有没有收到数据的
+	initialHeader := atomic.LoadUint32(&s.headerChanClosed) == 0 // 第一遍的时候 true
 
-	if !initialHeader && !endStream {
+	if !initialHeader && !endStream { // 这个待会来看看
 		// As specified by gRPC over HTTP2, a HEADERS frame (and associated CONTINUATION frames) can only appear at the start or end of a stream. Therefore, second HEADERS frame must have EOS bit set.
 		st := status.New(codes.Internal, "a HEADERS frame cannot appear in the middle of a stream")
 		t.closeStream(s, st.Err(), true, http2.ErrCodeProtocol, st, nil, false)
@@ -1248,7 +1293,7 @@ func (t *http2Client) operateHeaders(frame *http2.MetaHeadersFrame) {
 // optimal.
 // TODO(zhaoq): Check the validity of the incoming frame sequence.
 func (t *http2Client) reader() {
-	defer close(t.readerDone)
+	defer close(t.readerDone) // 单纯给测试用的
 	// Check the validity of server preface.
 	frame, err := t.framer.fr.ReadFrame()
 	if err != nil {
@@ -1264,17 +1309,17 @@ func (t *http2Client) reader() {
 		t.Close() // this kicks off resetTransport, so must be last before return
 		return
 	}
-	t.onPrefaceReceipt()
-	t.handleSettings(sf, true)
+	t.onPrefaceReceipt() // <-prefaceReceived 有消息了， createTransport 那边不堵塞了
+	t.handleSettings(sf, true) // 这个 true 很关键
 
 	// loop to keep reading incoming messages on this transport.
 	for {
-		t.controlBuf.throttle()
+		t.controlBuf.throttle() // 看 loopyWriter.run 能不能跟不上 reader的速度，跟不上这边会被堵住
 		frame, err := t.framer.fr.ReadFrame()
 		if t.keepaliveEnabled {
 			atomic.StoreInt64(&t.lastRead, time.Now().UnixNano())
 		}
-		if err != nil {
+		if err != nil { // 错误后面看
 			// Abort an active stream if the http2.Framer returns a
 			// http2.StreamError. This can happen only if the server's response
 			// is malformed http2.
@@ -1393,7 +1438,7 @@ func (t *http2Client) keepalive() {
 			sleepDuration := minTime(t.kp.Time, timeoutLeft)
 			timeoutLeft -= sleepDuration
 			timer.Reset(sleepDuration)
-		case <-t.ctx.Done():
+		case <-t.ctx.Done(): // 继承cc.ctx
 			if !timer.Stop() {
 				<-timer.C
 			}

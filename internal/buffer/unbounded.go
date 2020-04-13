@@ -47,6 +47,8 @@ func NewUnbounded() *Unbounded {
 // Put adds t to the unbounded buffer.
 func (b *Unbounded) Put(t interface{}) {
 	b.mu.Lock()
+	// 如果 b.c 读跟不上写的速度
+	// 数据就会放到 b.backlog
 	if len(b.backlog) == 0 {
 		select {
 		case b.c <- t:
@@ -64,6 +66,8 @@ func (b *Unbounded) Put(t interface{}) {
 // value from the read channel.
 func (b *Unbounded) Load() {
 	b.mu.Lock()
+	// 确保 buffer 里面数据还能放回管道
+	// 管道读一次就尝试从 buffer 里面再去取放到管道里面
 	if len(b.backlog) > 0 {
 		select {
 		case b.c <- b.backlog[0]:

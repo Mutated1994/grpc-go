@@ -37,6 +37,8 @@ import (
 
 var (
 	// m is a map from name to balancer builder.
+	// balancer.Register(newPickfirstBuilder()) first_pick
+	// balancer.Register(newBuilder()) round_robin
 	m = make(map[string]Builder)
 )
 
@@ -69,6 +71,8 @@ func init() {
 // Note that the compare is done in a case-insensitive fashion.
 // If no builder is register with the name, nil will be returned.
 func Get(name string) Builder {
+	// balancer.Register(newPickfirstBuilder()) first_pick
+	// balancer.Register(newBuilder()) round_robin
 	if b, ok := m[strings.ToLower(name)]; ok {
 		return b
 	}

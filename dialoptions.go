@@ -561,14 +561,14 @@ func withHealthCheckFunc(f internal.HealthChecker) DialOption {
 
 func defaultDialOptions() dialOptions {
 	return dialOptions{
-		disableRetry:    !envconfig.Retry,
-		healthCheckFunc: internal.HealthCheckFunc,
+		disableRetry:    !envconfig.Retry, // 没有设置环境变量默认是关闭的，true
+		healthCheckFunc: internal.HealthCheckFunc, // health/client.go clientHealthCheck
 		copts: transport.ConnectOptions{
-			WriteBufferSize: defaultWriteBufSize,
+			WriteBufferSize: defaultWriteBufSize, // 备注说 是底层系统调用的两倍，大小好像没啥影响
 			ReadBufferSize:  defaultReadBufSize,
 		},
-		resolveNowBackoff: internalbackoff.DefaultExponential.Backoff,
-		withProxy:         true,
+		resolveNowBackoff: internalbackoff.DefaultExponential.Backoff, // 回退策略（指数级的回退方法）
+		withProxy:         true, // 看 DialContext 有备注
 	}
 }
 

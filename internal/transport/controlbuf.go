@@ -59,6 +59,7 @@ func (il *itemList) peek() interface{} {
 	return il.head.it
 }
 
+// 从链表头取一个出来
 func (il *itemList) dequeue() interface{} {
 	if il.head == nil {
 		return nil
@@ -272,9 +273,9 @@ func (l *outStreamList) dequeue() *outStream {
 // like dataFrame and headerFrame do go out on wire as HTTP2 frames.
 type controlBuffer struct {
 	ch              chan struct{}
-	done            <-chan struct{}
+	done            <-chan struct{} // 这个是 cc.ctx.done 没有超时的
 	mu              sync.Mutex
-	consumerWaiting bool
+	consumerWaiting bool // 这个不知道干啥用
 	list            *itemList
 	err             error
 
@@ -299,6 +300,7 @@ func newControlBuffer(done <-chan struct{}) *controlBuffer {
 // controlbuf.
 func (c *controlBuffer) throttle() {
 	ch, _ := c.trfChan.Load().(*chan struct{})
+	// 没有触发 c.transportResponseFrames == maxQueuedTransportResponseFrames 之前是不会等待的
 	if ch != nil {
 		select {
 		case <-*ch:
@@ -325,14 +327,18 @@ func (c *controlBuffer) executeAndPut(f func(it interface{}) bool, it cbItem) (b
 			return false, nil
 		}
 	}
-	if c.consumerWaiting {
-		wakeUp = true
+	if c.consumerWaiting { // 说明这个时候， (l *loopyWriter) run() 大循环的 l.cbuf.get(true) 堵塞住了
+		wakeUp = true // 把那个协程唤醒
 		c.consumerWaiting = false
 	}
-	c.list.enqueue(it)
+	c.list.enqueue(it)                 // 第一次处理的肯定是settings 帧 incomingSettings
 	if it.isTransportResponseFrame() {
+		// incomingSettings:true
+		// ping: true
+		// incomingWindowUpdate:false
+		// outgoingWindowUpdate: false
 		c.transportResponseFrames++
-		if c.transportResponseFrames == maxQueuedTransportResponseFrames {
+		if c.transportResponseFrames == maxQueuedTransportResponseFrames { // 用来控制一个临界值的
 			// We are adding the frame that puts us over the threshold; create
 			// a throttling channel.
 			ch := make(chan struct{})
@@ -342,7 +348,7 @@ func (c *controlBuffer) executeAndPut(f func(it interface{}) bool, it cbItem) (b
 	c.mu.Unlock()
 	if wakeUp {
 		select {
-		case c.ch <- struct{}{}:
+		case c.ch <- struct{}{}: // 唤醒 (l *loopyWriter) run() 大循环的 l.cbuf.get(true)
 		default:
 		}
 	}
@@ -372,12 +378,19 @@ func (c *controlBuffer) get(block bool) (interface{}, error) {
 			return nil, c.err
 		}
 		if !c.list.isEmpty() {
-			h := c.list.dequeue().(cbItem)
-			if h.isTransportResponseFrame() {
+			// 假设这个先执行 func (l *loopyWriter) run()
+			// 这边肯定是为空，没有任何消息
+			// 相对比的就是 reader
+			// 反过来 reader 先执行，c.consumerWaiting = true 也就用不到了
+			h := c.list.dequeue().(cbItem)    // 所有帧都实现了这个接口，只要进来了都应该是要满足的（猜的）
+			if h.isTransportResponseFrame() { // 哪几种是返回帧
 				if c.transportResponseFrames == maxQueuedTransportResponseFrames {
+					// 首先 reader 会将读到的 ResponseFrame 放入 c.list
+					// 如果这边处理速度没有跟上 reader 那边，那 reader 将会被堵住，等到这边消息被消费掉
+					// reader 再继续工作
 					// We are removing the frame that put us over the
 					// threshold; close and clear the throttling channel.
-					ch := c.trfChan.Load().(*chan struct{})
+					ch := c.trfChan.Load().(*chan struct{}) // 这边写 跟那边写 都有这个边界值的触发，没搞懂
 					close(*ch)
 					c.trfChan.Store((*chan struct{})(nil))
 				}
@@ -386,15 +399,15 @@ func (c *controlBuffer) get(block bool) (interface{}, error) {
 			c.mu.Unlock()
 			return h, nil
 		}
-		if !block {
+		if !block { // func (l *loopyWriter) run() 大循环它要堵塞
 			c.mu.Unlock()
 			return nil, nil
 		}
-		c.consumerWaiting = true
+		c.consumerWaiting = true // 这里也应该就是大循环用，后续小循环都是非block，走不到这里了
 		c.mu.Unlock()
 		select {
-		case <-c.ch:
-		case <-c.done:
+		case <-c.ch: // reader 第一次 handleSettings 之后唤醒这里，然后第一帧SETTINGS的数据已放入list，这边开始工作
+		case <-c.done: // 这个是 cc.ctx.done 没有超时的
 			c.finish()
 			return nil, ErrConnClosing
 		}
@@ -510,7 +523,7 @@ func (l *loopyWriter) run() (err error) {
 		}
 	}()
 	for {
-		it, err := l.cbuf.get(true)
+		it, err := l.cbuf.get(true) // 它要堵塞
 		if err != nil {
 			return err
 		}

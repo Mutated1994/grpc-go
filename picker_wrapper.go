@@ -54,10 +54,11 @@ func (v *v2PickerWrapper) Pick(info balancer.PickInfo) (balancer.PickResult, err
 
 // pickerWrapper is a wrapper of balancer.Picker. It blocks on certain pick
 // actions and unblock when there's a picker update.
+// 三层饼，picker 套 v2PickerWrapper，v2PickerWrapper 再套 balancer.Picker。
 type pickerWrapper struct {
 	mu         sync.Mutex
 	done       bool
-	blockingCh chan struct{}
+	blockingCh chan struct{} // 这个应该也是传统手艺
 	picker     balancer.V2Picker
 
 	// The latest connection error.  TODO: remove when V1 picker is deprecated;
@@ -83,6 +84,7 @@ func (c *connErr) connectionError() error {
 	return err
 }
 
+// TODO 这里面v2需要注意下
 func newPickerWrapper() *pickerWrapper {
 	return &pickerWrapper{blockingCh: make(chan struct{}), connErr: &connErr{}}
 }
@@ -144,13 +146,13 @@ func (pw *pickerWrapper) pick(ctx context.Context, failfast bool, info balancer.
 		if pw.picker == nil {
 			ch = pw.blockingCh
 		}
-		if ch == pw.blockingCh {
+		if ch == pw.blockingCh { // updatePickerV2 之后 picker 为 nil，等待 picker 更新
 			// This could happen when either:
 			// - pw.picker is nil (the previous if condition), or
 			// - has called pick on the current picker.
 			pw.mu.Unlock()
 			select {
-			case <-ctx.Done():
+			case <-ctx.Done(): // invoke 传入的ctx，或者基于 sc.method 的超时时间的 ctx
 				var errStr string
 				if lastPickErr != nil {
 					errStr = "latest balancer error: " + lastPickErr.Error()
@@ -165,7 +167,7 @@ func (pw *pickerWrapper) pick(ctx context.Context, failfast bool, info balancer.
 				case context.Canceled:
 					return nil, nil, status.Error(codes.Canceled, errStr)
 				}
-			case <-ch:
+			case <-ch: // 有变化了，有可能被关了也有可能是新的连接可用了
 			}
 			continue
 		}
@@ -175,9 +177,11 @@ func (pw *pickerWrapper) pick(ctx context.Context, failfast bool, info balancer.
 		pw.mu.Unlock()
 
 		pickResult, err := p.Pick(info)
+		// pickResult.Done = nil
+		// pickResult.SubConn = acBalancerWrapper
 
-		if err != nil {
-			if err == balancer.ErrNoSubConnAvailable {
+		if err != nil { // 这里不会触发，picker 拿到就是不会存在错误的，可以看看全局的代码，result 跟 err 不会同时存在
+			if err == balancer.ErrNoSubConnAvailable { // 跟 下面 tfe.IsTransientFailure() 其实状态是交替的，再失败重试区间会触发下面这个
 				continue
 			}
 			if tfe, ok := err.(interface{ IsTransientFailure() bool }); ok && tfe.IsTransientFailure() {

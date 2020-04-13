@@ -52,6 +52,10 @@ func main() {
 	}
 	s := grpc.NewServer()
 	pb.RegisterGreeterServer(s, &server{})
+	//go func() {
+	//	time.Sleep(time.Second * 100)
+	//	s.GracefulStop()
+	//}()
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

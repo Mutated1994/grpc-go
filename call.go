@@ -29,7 +29,7 @@ import (
 func (cc *ClientConn) Invoke(ctx context.Context, method string, args, reply interface{}, opts ...CallOption) error {
 	// allow interceptor to see all applicable call options, which means those
 	// configured as defaults from dial option as well as per-call options
-	opts = combine(cc.dopts.callOptions, opts)
+	opts = combine(cc.dopts.callOptions, opts) // 一般这个opts都是空的
 
 	if cc.dopts.unaryInt != nil {
 		return cc.dopts.unaryInt(ctx, method, args, reply, cc, invoke, opts...)

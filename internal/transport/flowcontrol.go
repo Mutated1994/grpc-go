@@ -179,7 +179,7 @@ func (f *inFlow) maybeAdjust(n uint32) uint32 {
 func (f *inFlow) onData(n uint32) error {
 	f.mu.Lock()
 	f.pendingData += n
-	if f.pendingData+f.pendingUpdate > f.limit+f.delta {
+	if f.pendingData+f.pendingUpdate > f.limit+f.delta { // f.pendingUpdate 什么时候会增加不知道
 		limit := f.limit
 		rcvd := f.pendingData + f.pendingUpdate
 		f.mu.Unlock()

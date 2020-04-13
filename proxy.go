@@ -120,7 +120,7 @@ func doHTTPConnectHandshake(ctx context.Context, conn net.Conn, backendAddr stri
 // provided dialer, does HTTP CONNECT handshake and returns the connection.
 func newProxyDialer(dialer func(context.Context, string) (net.Conn, error)) func(context.Context, string) (net.Conn, error) {
 	return func(ctx context.Context, addr string) (conn net.Conn, err error) {
-		var newAddr string
+		var newAddr string // 172.16.34.140:50051
 		proxyURL, err := mapAddress(ctx, addr)
 		if err != nil {
 			if err != errDisabled {
@@ -130,7 +130,7 @@ func newProxyDialer(dialer func(context.Context, string) (net.Conn, error)) func
 		} else {
 			newAddr = proxyURL.Host
 		}
-
+		// 上面全部忽略吧
 		conn, err = dialer(ctx, newAddr)
 		if err != nil {
 			return

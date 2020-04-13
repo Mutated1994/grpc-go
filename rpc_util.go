@@ -746,6 +746,9 @@ func newContextWithRPCInfo(ctx context.Context, failfast bool, codec baseCodec, 
 			cp:    cp,
 			comp:  comp,
 		},
+		// 	codec baseCodec
+		//	cp    Compressor
+		//	comp  encoding.Compressor
 	})
 }
 
